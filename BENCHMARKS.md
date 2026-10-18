@@ -16,6 +16,13 @@ pure-Python implementation in
 | Dataset | `TinyStoriesV2-GPT4-train`, 10 MB subset |
 | Vocabulary size | 1024 (256 base byte tokens + 767 merges + `<\|endoftext\|>`) |
 | Build | release (`--release` / `maturin develop --release`) |
+| Dataset variant | Pre-stripped — contains zero `<\|endoftext\|>` tokens |
+
+> **Note on the dataset.** The `-tokenizer-` variants used here have had their
+> `<|endoftext|>` document separators removed. The raw
+> `TinyStoriesV2-GPT4-train.txt` contains roughly 1,270 per megabyte. These
+> benchmarks therefore measure plain-text tokenization only and never exercise
+> the special-token code path.
 
 ## Rust vs. Python
 
@@ -36,10 +43,11 @@ Same dataset, same vocabulary size:
 | Encode | 1.51 s | 1.44 s |
 | Decode | 71.02 ms | 68.46 ms |
 
-Run 1 and Run 2 bracket a change that removed the separate `<|endoftext|>`
-preprocessing pass, folding that handling into the encoder itself. The
-improvement is modest at this scale, which is expected — the preprocessing pass
-is not the bottleneck; training dominates.
+Run 1 and Run 2 bracket a change that moved `<|endoftext|>` handling out of a
+separate preprocessing pass and into the encoder itself. Because the benchmark
+dataset contains no `<|endoftext|>` tokens, that change cannot affect these
+numbers — the ~3% spread between the two runs is run-to-run noise rather than a
+real gain.
 
 ## Where the time goes
 
@@ -55,6 +63,9 @@ over pure Python.
 - [ ] Record absolute Python timings. Currently only the relative speedup (11.7x)
       and latency reduction (91.4%) are captured, so the Python baseline
       cannot be reconstructed from this document alone.
+- [ ] Benchmark with `<|endoftext|>` present, using the raw train file or a
+      sample of it. The current dataset exercises the special-token path zero
+      times, so its correctness and cost are both unmeasured.
 - [ ] Run the 50 MB and 200 MB subsets and report compression ratio against
       training time, as originally planned.
 - [ ] Re-run after the next optimization pass and track the improvement.
