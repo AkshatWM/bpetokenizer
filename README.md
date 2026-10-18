@@ -9,6 +9,11 @@ It implements the same core algorithm as
 loops run in Rust, which makes training on multi-hundred-megabyte corpora
 practical.
 
+It is the Rust counterpart to the pure-Python BPE tokenizer in
+[Neural_Networks_from_Scratch](https://github.com/AkshatWM/Neural_Networks_from_Scratch/tree/main/my_tokenizer/gpt_bpe_tokenizer),
+built as a faster drop-in replacement for it. See [BENCHMARKS.md](BENCHMARKS.md)
+for the measured speedup.
+
 ## Features
 
 - **GPT-4 style pre-tokenization** using the `cl100k_base` regex pattern.
@@ -89,6 +94,23 @@ tokenizer.load("mymodel.model")  # restores merges and rebuilds the vocab
 
 The model file is a plain text format (`rustbpe v1` header followed by one
 `a b merged_id` merge per line), so it is easy to diff and inspect.
+
+## Performance
+
+Against the pure-Python implementation this replaces, on a 10 MB TinyStories
+subset with a 1024-token vocabulary:
+
+| Metric | Result |
+| --- | --- |
+| Training speedup | ~11.7x |
+| Latency reduction | 91.4% |
+
+Training dominates the runtime at roughly 60x the cost of encoding, because BPE
+training is `O(num_merges x corpus_length)`. That cost is a tight loop of
+integer operations over large byte arrays, which is what Rust is good at.
+
+These numbers are preliminary. Full methodology, absolute timings, and what is
+still being measured are in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## API
 
