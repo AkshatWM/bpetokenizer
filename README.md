@@ -89,11 +89,15 @@ tokenizer.decode(ids, errors="strict")   # invalid UTF-8 raises ValueError
 
 ```python
 tokenizer.save("mymodel")        # creates mymodel.model
-tokenizer.load("mymodel.model")  # restores merges and rebuilds the vocab
+tokenizer.load("mymodel.model")  # restores merges, vocab, and <|endoftext|>
 ```
 
 The model file is a plain text format (`rustbpe v1` header followed by one
 `a b merged_id` merge per line), so it is easy to diff and inspect.
+
+It records merges only. On load, the `<|endoftext|>` id is recovered as one
+past the highest merge id and the token is re-attached, so a freshly loaded
+tokenizer encodes and decodes the special token correctly.
 
 ## Performance
 
@@ -121,7 +125,7 @@ still being measured are in [BENCHMARKS.md](BENCHMARKS.md).
 | `encode(text: str) -> list[int]` | Encode text, handling `<|endoftext|>` as a special token. |
 | `decode(ids: list[int], errors: str = "replace") -> str` | Decode ids to text, with `"replace"` or `"strict"` error handling. |
 | `save(file_prefix: str)` | Write merges to `{file_prefix}.model`. |
-| `load(model_file: str)` | Load merges from a `.model` file. |
+| `load(model_file: str)` | Load merges from a `.model` file, restoring the vocabulary and `<\|endoftext\|>`. |
 
 ## License
 

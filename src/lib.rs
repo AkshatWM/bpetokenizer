@@ -8,6 +8,7 @@ use std::{
 };
 
 const GPT4_REGEX_PATTERN: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+";
+const EOT_STR: &str = "<|endoftext|>";
 
 type Pair = (u32, u32);
 
@@ -98,7 +99,7 @@ impl RegexTokenizer {
                 );
             }
         }
-        vocab.insert(self.eot_id.unwrap(), b"<|endoftext|>".to_vec());
+        vocab.insert(self.eot_id.unwrap(), EOT_STR.as_bytes().to_vec());
         self.merges = merges;
         self.vocab = vocab;
         Ok(())
@@ -121,7 +122,7 @@ impl RegexTokenizer {
 
     pub fn encode(&self, text: &str) -> PyResult<Vec<u32>> {
         let mut ids = Vec::new();
-        for (i, part) in text.split("<|endoftext|>").enumerate() {
+        for (i, part) in text.split(EOT_STR).enumerate() {
             if i > 0 {
                 let eot_id = self.eot_id.ok_or_else(|| {
                     PyValueError::new_err("cannot encode '<|endoftext|>': eot_id is not set")
@@ -164,7 +165,16 @@ impl RegexTokenizer {
                 .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
             self.merges.insert((nums[0], nums[1]), nums[2]);
         }
+
+        // The model file stores merges only, so the reserved <|endoftext|> id and
+        // its bytes are not in it. Recover the id as one past the highest merge
+        // and re-attach the token, otherwise encode/decode of <|endoftext|>
+        // breaks on a freshly loaded tokenizer.
+        self.eot_id = self.merges.values().max().map(|&idx| idx + 1);
         self.rebuild_vocab();
+        if let Some(eot_id) = self.eot_id {
+            self.vocab.insert(eot_id, EOT_STR.as_bytes().to_vec());
+        }
         Ok(())
     }
 }
