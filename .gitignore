@@ -1,1 +1,15 @@
 /target
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+/dist
+/build
+
+# Compiled extension modules
+*.so
+*.pyd
+*.dylib

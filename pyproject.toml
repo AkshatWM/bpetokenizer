@@ -1,3 +1,28 @@
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
+
+[project]
+name = "bpe-tokenizer"
+version = "0.2.0"
+description = "A fast byte-pair encoding tokenizer written in Rust with Python bindings"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "AkshatWM", email = "akshat2005n@gmail.com" }]
+keywords = ["bpe", "tokenizer", "rust", "nlp", "llm"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+[project.urls]
+Homepage = "https://github.com/AkshatWM/rust_bpe_tokenizer"
+Repository = "https://github.com/AkshatWM/rust_bpe_tokenizer"
+Issues = "https://github.com/AkshatWM/rust_bpe_tokenizer/issues"
+
+[tool.maturin]
+module-name = "bpe_tokenizer"
