@@ -20,9 +20,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/AkshatWM/rust_bpe_tokenizer"
-Repository = "https://github.com/AkshatWM/rust_bpe_tokenizer"
-Issues = "https://github.com/AkshatWM/rust_bpe_tokenizer/issues"
+Homepage = "https://github.com/AkshatWM/bpetokenizer"
+Repository = "https://github.com/AkshatWM/bpetokenizer"
+Issues = "https://github.com/AkshatWM/bpetokenizer/issues"
 
 [tool.maturin]
 module-name = "bpe_tokenizer"
