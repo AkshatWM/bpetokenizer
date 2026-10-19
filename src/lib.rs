@@ -40,14 +40,32 @@ impl RegexTokenizer {
 
     #[pyo3(signature = (target, vocab_size, verbose=false))]
     pub fn train(&mut self, target: String, vocab_size: u32, verbose: bool) -> PyResult<()> {
-        self.eot_id = Some(vocab_size - 1);
+        if vocab_size <= 256 {
+            return Err(PyValueError::new_err(format!(
+                "vocab_size must be greater than 256, got {vocab_size}"
+            )));
+        }
+
+        // The highest id is reserved for <|endoftext|>. Deriving it here keeps it
+        // in step with vocab_size, rather than relying on a separate constant
+        // that has to be updated by hand.
+        let eot_id = vocab_size - 1;
+
         let text_chunks: Vec<&str> = self
             .pretokenize(target.as_str())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let mut ids: Vec<Vec<u32>> = Vec::new();
+        let mut index: FxHashMap<&str, usize> = FxHashMap::default();
+        let mut words: Vec<Vec<u32>> = Vec::new();
+        let mut freqs: Vec<u64> = Vec::new();
         for text in text_chunks {
-            let tokens: Vec<u32> = text.bytes().map(|b| b as u32).collect();
-            ids.push(tokens);
+            match index.get(text) {
+                Some(&i) => freqs[i] += 1,
+                None => {
+                    index.insert(text, words.len());
+                    words.push(text.bytes().map(|b| b as u32).collect());
+                    freqs.push(1);
+                }
+            }
         }
         let num_merges: u32 = vocab_size - 256 - 1;
         let mut merges: FxHashMap<Pair, u32> = FxHashMap::default();
@@ -55,29 +73,29 @@ impl RegexTokenizer {
         // stats -> {Pair : int}
         // merges -> {Pair : TokenId}
         for i in 0..num_merges {
-            let mut stats: FxHashMap<Pair, u32> = FxHashMap::default();
-            for chunk_ids in &ids {
-                get_stats(&chunk_ids, &mut stats);
+            let mut stats: FxHashMap<Pair, u64> = FxHashMap::default();
+            for (word, &freq) in words.iter().zip(&freqs) {
+                get_stats(word, freq, &mut stats);
             }
             if stats.len() == 0 {
                 break;
             }
 
-            let pair = stats
+            // Highest count, then the lexicographically smallest pair. Relying
+            // on hash-map iteration order for ties would make trained models
+            // depend on the map implementation.
+            let best_pair = *stats
                 .iter()
-                .max_by_key(|&(_, count)| count)
-                .map(|(pair, _)| *pair);
+                .max_by(|(pair_a, count_a), (pair_b, count_b)| {
+                    count_a.cmp(count_b).then_with(|| pair_b.cmp(pair_a))
+                })
+                .map(|(pair, _)| pair)
+                .unwrap();
             let idx: u32 = 256 + i;
 
-            let best_pair = match pair {
-                Some(p) => p,
-                None => break,
-            };
-
-            ids = ids
-                .into_iter()
-                .map(|chunk_ids| merge(&chunk_ids, best_pair, idx))
-                .collect();
+            for word in words.iter_mut() {
+                merge_in_place(word, best_pair, idx);
+            }
 
             merges.insert(best_pair, idx);
 
@@ -92,16 +110,17 @@ impl RegexTokenizer {
                     "merge {:?}/{:?}: {:?} -> {:?} ({:?}) had {:?} occurrences",
                     i + 1,
                     num_merges,
-                    pair,
+                    best_pair,
                     idx,
                     vocab.get(&idx),
-                    stats.get(&(pair.unwrap()))
+                    stats.get(&best_pair)
                 );
             }
         }
-        vocab.insert(self.eot_id.unwrap(), EOT_STR.as_bytes().to_vec());
+        vocab.insert(eot_id, EOT_STR.as_bytes().to_vec());
         self.merges = merges;
         self.vocab = vocab;
+        self.eot_id = Some(eot_id);
         Ok(())
     }
 
@@ -122,6 +141,8 @@ impl RegexTokenizer {
 
     pub fn encode(&self, text: &str) -> PyResult<Vec<u32>> {
         let mut ids = Vec::new();
+        let mut cache: FxHashMap<&str, Vec<u32>> = FxHashMap::default();
+
         for (i, part) in text.split(EOT_STR).enumerate() {
             if i > 0 {
                 let eot_id = self.eot_id.ok_or_else(|| {
@@ -133,15 +154,34 @@ impl RegexTokenizer {
                 .pretokenize(part)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?
             {
-                ids.extend(self.encode_chunk(chunk));
+                let toks = cache
+                    .entry(chunk)
+                    .or_insert_with(|| self.encode_chunk(chunk));
+                ids.extend_from_slice(toks);
             }
         }
         Ok(ids)
     }
 
     pub fn save(&self, file_prefix: &str) -> io::Result<()> {
+        // The file stores merges only, and load() recovers the EOT id as one
+        // past the highest merge id. Only save models that fill every merge
+        // slot; otherwise the EOT id would shift on reload.
+        let eot_id = self.eot_id.ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidInput, "no eot id: call train() first")
+        })?;
+        if self.merges.len() as u32 != eot_id - 256 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "cannot save: training stopped before filling the vocabulary, \
+                 so the eot id is not recoverable from the merge file",
+            ));
+        }
+
         let mut out = String::from("rustbpe v1\n");
-        for (&(a, b), &idx) in &self.merges {
+        let mut merges: Vec<_> = self.merges.iter().collect();
+        merges.sort_by_key(|&(_, &idx)| idx);
+        for (&(a, b), &idx) in merges {
             out.push_str(&format!("{a} {b} {idx}\n"));
         }
         fs::write(format!("{file_prefix}.model"), out)
@@ -156,25 +196,55 @@ impl RegexTokenizer {
                 "unrecognized header",
             ));
         }
-        self.merges.clear();
+
+        // Parse into a temporary map so a bad file cannot leave the tokenizer
+        // half-loaded.
+        let mut merges: FxHashMap<Pair, u32> = FxHashMap::default();
         for line in lines {
             let nums: Vec<u32> = line
                 .split_whitespace()
                 .map(|s| s.parse())
                 .collect::<Result<_, _>>()
                 .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
-            self.merges.insert((nums[0], nums[1]), nums[2]);
+            let &[a, b, idx] = nums.as_slice() else {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "merge lines must be '<a> <b> <idx>'",
+                ));
+            };
+            if a >= idx || b >= idx {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "merge inputs must have lower ids than the merged token",
+                ));
+            }
+            if merges.insert((a, b), idx).is_some() {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "duplicate merge pair",
+                ));
+            }
         }
 
-        // The model file stores merges only, so the reserved <|endoftext|> id and
-        // its bytes are not in it. Recover the id as one past the highest merge
-        // and re-attach the token, otherwise encode/decode of <|endoftext|>
-        // breaks on a freshly loaded tokenizer.
-        self.eot_id = self.merges.values().max().map(|&idx| idx + 1);
-        self.rebuild_vocab();
-        if let Some(eot_id) = self.eot_id {
-            self.vocab.insert(eot_id, EOT_STR.as_bytes().to_vec());
+        // The model file stores merges only. Require them to occupy a
+        // contiguous range 256.., then the EOT id is exactly one past the
+        // highest merge id (or 256 when there are no merges).
+        let mut ids: Vec<u32> = merges.values().copied().collect();
+        ids.sort_unstable();
+        for (expected, &idx) in (256u32..).zip(&ids) {
+            if idx != expected {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "merge ids must form a contiguous range starting at 256",
+                ));
+            }
         }
+        let eot_id = 256 + ids.len() as u32;
+
+        self.merges = merges;
+        self.rebuild_vocab();
+        self.eot_id = Some(eot_id);
+        self.vocab.insert(eot_id, EOT_STR.as_bytes().to_vec());
         Ok(())
     }
 }
@@ -214,19 +284,20 @@ impl RegexTokenizer {
 
     fn encode_chunk(&self, text: &str) -> Vec<u32> {
         let mut ids: Vec<u32> = text.bytes().map(|b| b as u32).collect();
-        let mut counts: FxHashMap<Pair, u32> = FxHashMap::default();
-        while ids.len() >= 2 {
-            counts.clear();
-            get_stats(&ids, &mut counts);
-            let pair = *counts
-                .keys()
-                .min_by_key(|p| self.merges.get(p).copied().unwrap_or(u32::MAX))
-                .unwrap();
 
-            let Some(&idx) = self.merges.get(&pair) else {
-                break;
-            };
-            ids = merge(&ids, pair, idx);
+        while ids.len() >= 2 {
+            // find the adjacent pair with the lowest merge rank
+            let mut best: Option<(Pair, u32)> = None;
+            for w in ids.windows(2) {
+                let pair = (w[0], w[1]);
+                if let Some(&rank) = self.merges.get(&pair) {
+                    if best.map_or(true, |(_, r)| rank < r) {
+                        best = Some((pair, rank));
+                    }
+                }
+            }
+            let Some((pair, idx)) = best else { break };
+            merge_in_place(&mut ids, pair, idx);
         }
         ids
     }
@@ -243,26 +314,25 @@ impl RegexTokenizer {
     }
 }
 
-fn get_stats(ids: &[u32], counts: &mut FxHashMap<Pair, u32>) {
-    for window in ids.windows(2) {
-        let pair: Pair = (window[0], window[1]);
-        *counts.entry(pair).or_insert(0) += 1;
+fn get_stats(word: &[u32], freq: u64, stats: &mut FxHashMap<Pair, u64>) {
+    for w in word.windows(2) {
+        *stats.entry((w[0], w[1])).or_insert(0) += freq;
     }
 }
 
-fn merge(ids: &[u32], pair: Pair, idx: u32) -> Vec<u32> {
-    let mut newids = Vec::with_capacity(ids.len());
-    let mut i = 0;
-    while i < ids.len() {
-        if ids[i] == pair.0 && i + 1 < ids.len() && ids[i + 1] == pair.1 {
-            newids.push(idx);
-            i += 2;
+fn merge_in_place(ids: &mut Vec<u32>, pair: Pair, new_id: u32) {
+    let (mut r, mut w) = (0, 0);
+    while r < ids.len() {
+        if r + 1 < ids.len() && ids[r] == pair.0 && ids[r + 1] == pair.1 {
+            ids[w] = new_id;
+            r += 2;
         } else {
-            newids.push(ids[i]);
-            i += 1
+            ids[w] = ids[r];
+            r += 1;
         }
+        w += 1;
     }
-    newids
+    ids.truncate(w);
 }
 
 #[pymodule]

@@ -99,6 +99,11 @@ It records merges only. On load, the `<|endoftext|>` id is recovered as one
 past the highest merge id and the token is re-attached, so a freshly loaded
 tokenizer encodes and decodes the special token correctly.
 
+Because the id is inferred this way, `save` only accepts models whose merges
+fill every slot. If training stopped early (for example on a tiny corpus),
+there is no way to record the original `<|endoftext|>` id in this format, and
+`save` raises an `OSError` instead of writing a model that would load wrong.
+
 ## Performance
 
 Against the pure-Python implementation this replaces, on a 10 MB TinyStories
