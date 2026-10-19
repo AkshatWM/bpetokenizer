@@ -109,17 +109,21 @@ there is no way to record the original `<|endoftext|>` id in this format, and
 Against the pure-Python implementation this replaces, on a 10 MB TinyStories
 subset with a 1024-token vocabulary:
 
-| Metric | Result |
-| --- | --- |
-| Training speedup | ~11.7x |
-| Latency reduction | 91.4% |
+| Stage | Python | Rust | Speedup |
+| --- | --- | --- | --- |
+| Train | 1776.78 s | 0.80 s | ~2212x |
+| Encode | 16.51 s | 0.52 s | ~31.8x |
+| Decode | 0.341 s | 0.067 s | ~5.1x |
 
-Training dominates the runtime at roughly 60x the cost of encoding, because BPE
-training is `O(num_merges x corpus_length)`. That cost is a tight loop of
-integer operations over large byte arrays, which is what Rust is good at.
+Training dominates the total on both sides, so the end-to-end latency reduction
+is 99.92%. The trainer deduplicates pretokenized chunks and weights pair counts
+by their frequency, so each merge pass scans unique words instead of every
+chunk, and words are merged in place. Encoding finds the lowest-rank adjacent
+pair in one scan and caches repeated chunks within a call.
 
-These numbers are preliminary. Full methodology, absolute timings, and what is
-still being measured are in [BENCHMARKS.md](BENCHMARKS.md).
+These numbers are preliminary and come from a single machine. Full methodology,
+absolute timings, hardware, and what is still being measured are in
+[BENCHMARKS.md](BENCHMARKS.md).
 
 ## API
 
