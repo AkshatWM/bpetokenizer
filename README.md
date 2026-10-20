@@ -11,7 +11,7 @@ practical.
 
 It is the Rust counterpart to the pure-Python BPE tokenizer in
 [Neural_Networks_from_Scratch](https://github.com/AkshatWM/Neural_Networks_from_Scratch/tree/main/my_tokenizer/gpt_bpe_tokenizer),
-built as a faster drop-in replacement for it. See [BENCHMARKS.md](BENCHMARKS.md)
+built as a faster drop-in replacement for it. See [Performance](#performance)
 for the measured speedup.
 
 ## Features
@@ -106,24 +106,30 @@ there is no way to record the original `<|endoftext|>` id in this format, and
 
 ## Performance
 
-Against the pure-Python implementation this replaces, on a 10 MB TinyStories
-subset with a 1024-token vocabulary:
+Measured against the pure-Python implementation on a 10 MB subset of
+`TinyStoriesV2-GPT4-train` (10,958,972 characters) with a 1024-token vocabulary,
+built in release mode on a 12th Gen Intel Core i5-12450H with 16 GB RAM, Python
+3.12, and rustc 1.98:
 
 | Stage | Python | Rust | Speedup |
 | --- | --- | --- | --- |
 | Train | 1776.78 s | 0.80 s | ~2212x |
 | Encode | 16.51 s | 0.52 s | ~31.8x |
 | Decode | 0.341 s | 0.067 s | ~5.1x |
+| **Total** | 1793.63 s | 1.39 s | **~1291x** |
 
-Training dominates the total on both sides, so the end-to-end latency reduction
-is 99.92%. The trainer deduplicates pretokenized chunks and weights pair counts
-by their frequency, so each merge pass scans unique words instead of every
-chunk, and words are merged in place. Encoding finds the lowest-rank adjacent
-pair in one scan and caches repeated chunks within a call.
+End-to-end latency is reduced by 99.92%. Training dominates both sides; in the
+Rust build it is now roughly 1.5x the cost of encoding, down from about 60x
+before the trainer was optimized.
 
-These numbers are preliminary and come from a single machine. Full methodology,
-absolute timings, hardware, and what is still being measured are in
-[BENCHMARKS.md](BENCHMARKS.md).
+The trainer deduplicates pretokenized chunks into unique words weighted by
+frequency, merges words in place, and breaks count ties deterministically
+(highest count, then lowest pair). Encoding finds the lowest-rank adjacent pair
+in a single scan and caches repeated chunks within a call.
+
+These are single-machine, single-subset figures. The benchmark corpus is
+pre-stripped of `<|endoftext|>`, so the special-token path is not exercised, and
+larger corpus and vocabulary runs are still pending.
 
 ## API
 
