@@ -1,7 +1,8 @@
 use fancy_regex::Regex;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use rustc_hash::FxHashMap;
+use std::path::{Path, PathBuf};
 use std::{
     fs,
     io::{self, ErrorKind},
@@ -46,9 +47,7 @@ impl RegexTokenizer {
             )));
         }
 
-        // The highest id is reserved for <|endoftext|>. Deriving it here keeps it
-        // in step with vocab_size, rather than relying on a separate constant
-        // that has to be updated by hand.
+        // The highest id is reserved for <|endoftext|>.
         let eot_id = vocab_size - 1;
 
         let text_chunks: Vec<&str> = self
@@ -163,28 +162,9 @@ impl RegexTokenizer {
         Ok(ids)
     }
 
-    pub fn save(&self, file_prefix: &str) -> io::Result<()> {
-        // The file stores merges only, and load() recovers the EOT id as one
-        // past the highest merge id. Only save models that fill every merge
-        // slot; otherwise the EOT id would shift on reload.
-        let eot_id = self.eot_id.ok_or_else(|| {
-            io::Error::new(ErrorKind::InvalidInput, "no eot id: call train() first")
-        })?;
-        if self.merges.len() as u32 != eot_id - 256 {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "cannot save: training stopped before filling the vocabulary, \
-                 so the eot id is not recoverable from the merge file",
-            ));
-        }
-
-        let mut out = String::from("rustbpe v1\n");
-        let mut merges: Vec<_> = self.merges.iter().collect();
-        merges.sort_by_key(|&(_, &idx)| idx);
-        for (&(a, b), &idx) in merges {
-            out.push_str(&format!("{a} {b} {idx}\n"));
-        }
-        fs::write(format!("{file_prefix}.model"), out)
+    pub fn save(&self, file_prefix: PathBuf) -> PyResult<()> {
+        self.save_impl(file_prefix)
+            .map_err(|e| PyIOError::new_err(e.to_string()))
     }
 
     pub fn load(&mut self, model_file: &str) -> io::Result<()> {
@@ -300,6 +280,41 @@ impl RegexTokenizer {
             merge_in_place(&mut ids, pair, idx);
         }
         ids
+    }
+
+    fn save_impl(&self, file_prefix: impl AsRef<Path>) -> io::Result<()> {
+        // The file stores merges only, and load() recovers the EOT id as one
+        // past the highest merge id. Only save models that fill every merge
+        // slot; otherwise the EOT id would shift on reload.
+        let file_prefix = file_prefix.as_ref();
+        let eot_id = self.eot_id.ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidInput, "no eot id: call train() first")
+        })?;
+        if self.merges.len() as u32 != eot_id - 256 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "cannot save: training stopped before filling the vocabulary, \
+                 so the eot id is not recoverable from the merge file",
+            ));
+        }
+
+        let mut out = String::from("rustbpe v1\n");
+        let mut merges: Vec<_> = self.merges.iter().collect();
+        merges.sort_by_key(|&(_, &idx)| idx);
+        for (&(a, b), &idx) in merges {
+            out.push_str(&format!("{a} {b} {idx}\n"));
+        }
+
+        if let Some(parent) = file_prefix.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        let mut model_path = file_prefix.as_os_str().to_owned();
+        model_path.push(".model");
+        fs::write(&model_path, out)?;
+        Ok(())
     }
 
     fn rebuild_vocab(&mut self) {
