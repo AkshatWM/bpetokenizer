@@ -76,7 +76,7 @@ impl RegexTokenizer {
             for (word, &freq) in words.iter().zip(&freqs) {
                 get_stats(word, freq, &mut stats);
             }
-            if stats.len() == 0 {
+            if stats.is_empty() {
                 break;
             }
 
@@ -167,8 +167,68 @@ impl RegexTokenizer {
             .map_err(|e| PyIOError::new_err(e.to_string()))
     }
 
-    pub fn load(&mut self, model_file: &str) -> io::Result<()> {
-        let text = fs::read_to_string(model_file)?;
+    pub fn load(&mut self, model_file: PathBuf) -> PyResult<()> {
+        self.load_impl(model_file)
+            .map_err(|e| PyIOError::new_err(e.to_string()))
+    }
+}
+
+#[derive(Debug)]
+pub enum DecodeError {
+    UnknownId(u32),
+    InvalidUtf8(String),
+}
+
+impl RegexTokenizer {
+    fn pretokenize<'a>(&self, target: &'a str) -> Result<Vec<&'a str>, fancy_regex::Error> {
+        self.pattern
+            .find_iter(target)
+            .map(|m| m.map(|m| m.as_str()))
+            .collect()
+    }
+
+    fn decode_bytes(&self, ids: &[u32]) -> Result<Vec<u8>, DecodeError> {
+        let mut tokens = Vec::new();
+        for &id in ids {
+            let bytes = self.vocab.get(&id).ok_or(DecodeError::UnknownId(id))?;
+            tokens.extend_from_slice(bytes);
+        }
+        Ok(tokens)
+    }
+
+    fn decode_lossy(&self, ids: &[u32]) -> Result<String, DecodeError> {
+        self.decode_bytes(ids)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    fn decode_strict(&self, ids: &[u32]) -> Result<String, DecodeError> {
+        let bytes = self.decode_bytes(ids)?;
+        String::from_utf8(bytes).map_err(|e| DecodeError::InvalidUtf8(e.to_string()))
+    }
+
+    fn encode_chunk(&self, text: &str) -> Vec<u32> {
+        let mut ids: Vec<u32> = text.bytes().map(|b| b as u32).collect();
+
+        while ids.len() >= 2 {
+            // find the adjacent pair with the lowest merge rank
+            let mut best: Option<(Pair, u32)> = None;
+            for w in ids.windows(2) {
+                let pair = (w[0], w[1]);
+                let Some(&rank) = self.merges.get(&pair) else {
+                    continue;
+                };
+                if best.is_none_or(|(_, r)| rank < r) {
+                    best = Some((pair, rank));
+                }
+            }
+            let Some((pair, idx)) = best else { break };
+            merge_in_place(&mut ids, pair, idx);
+        }
+        ids
+    }
+
+    fn load_impl(&mut self, model_file: impl AsRef<Path>) -> io::Result<()> {
+        let text = fs::read_to_string(model_file.as_ref())?;
         let mut lines = text.lines();
         if lines.next() != Some("rustbpe v1") {
             return Err(io::Error::new(
@@ -227,60 +287,6 @@ impl RegexTokenizer {
         self.vocab.insert(eot_id, EOT_STR.as_bytes().to_vec());
         Ok(())
     }
-}
-
-#[derive(Debug)]
-pub enum DecodeError {
-    UnknownId(u32),
-    InvalidUtf8(String),
-}
-
-impl RegexTokenizer {
-    fn pretokenize<'a>(&self, target: &'a str) -> Result<Vec<&'a str>, fancy_regex::Error> {
-        self.pattern
-            .find_iter(target)
-            .map(|m| m.map(|m| m.as_str()))
-            .collect()
-    }
-
-    fn decode_bytes(&self, ids: &[u32]) -> Result<Vec<u8>, DecodeError> {
-        let mut tokens = Vec::new();
-        for &id in ids {
-            let bytes = self.vocab.get(&id).ok_or(DecodeError::UnknownId(id))?;
-            tokens.extend_from_slice(bytes);
-        }
-        Ok(tokens)
-    }
-
-    fn decode_lossy(&self, ids: &[u32]) -> Result<String, DecodeError> {
-        self.decode_bytes(ids)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-    }
-
-    fn decode_strict(&self, ids: &[u32]) -> Result<String, DecodeError> {
-        let bytes = self.decode_bytes(ids)?;
-        String::from_utf8(bytes).map_err(|e| DecodeError::InvalidUtf8(e.to_string()))
-    }
-
-    fn encode_chunk(&self, text: &str) -> Vec<u32> {
-        let mut ids: Vec<u32> = text.bytes().map(|b| b as u32).collect();
-
-        while ids.len() >= 2 {
-            // find the adjacent pair with the lowest merge rank
-            let mut best: Option<(Pair, u32)> = None;
-            for w in ids.windows(2) {
-                let pair = (w[0], w[1]);
-                if let Some(&rank) = self.merges.get(&pair) {
-                    if best.map_or(true, |(_, r)| rank < r) {
-                        best = Some((pair, rank));
-                    }
-                }
-            }
-            let Some((pair, idx)) = best else { break };
-            merge_in_place(&mut ids, pair, idx);
-        }
-        ids
-    }
 
     fn save_impl(&self, file_prefix: impl AsRef<Path>) -> io::Result<()> {
         // The file stores merges only, and load() recovers the EOT id as one
@@ -305,10 +311,11 @@ impl RegexTokenizer {
             out.push_str(&format!("{a} {b} {idx}\n"));
         }
 
-        if let Some(parent) = file_prefix.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = file_prefix
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
         }
 
         let mut model_path = file_prefix.as_os_str().to_owned();

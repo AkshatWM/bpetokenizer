@@ -92,6 +92,21 @@ tokenizer.save("mymodel")        # creates mymodel.model
 tokenizer.load("mymodel.model")  # restores merges, vocab, and <|endoftext|>
 ```
 
+`save` takes a path prefix and always appends `.model`; missing parent
+directories are created automatically. Both `save` and `load` accept a `str` or
+any `os.PathLike`, such as a `pathlib.Path`:
+
+```python
+import pathlib
+
+tokenizer.save(pathlib.Path("models/tinystories"))
+# creates models/tinystories.model
+
+tokenizer.load(pathlib.Path("models/tinystories.model"))
+```
+
+`load` takes the full path to the model file.
+
 The model file is a plain text format (`rustbpe v1` header followed by one
 `a b merged_id` merge per line), so it is easy to diff and inspect.
 
@@ -139,8 +154,8 @@ larger corpus and vocabulary runs are still pending.
 | `train(target: str, vocab_size: int, verbose: bool = False)` | Train merges on `target` up to `vocab_size` tokens. |
 | `encode(text: str) -> list[int]` | Encode text, handling `<|endoftext|>` as a special token. |
 | `decode(ids: list[int], errors: str = "replace") -> str` | Decode ids to text, with `"replace"` or `"strict"` error handling. |
-| `save(file_prefix: str)` | Write merges to `{file_prefix}.model`. |
-| `load(model_file: str)` | Load merges from a `.model` file, restoring the vocabulary and `<\|endoftext\|>`. |
+| `save(file_prefix: str \| os.PathLike)` | Write merges to `{file_prefix}.model`, creating parent directories as needed. |
+| `load(model_file: str \| os.PathLike)` | Load merges from a `.model` file, restoring the vocabulary and `<\|endoftext\|>`. |
 
 ## License
 
