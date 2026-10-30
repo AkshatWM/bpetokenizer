@@ -133,18 +133,35 @@ built in release mode on a 12th Gen Intel Core i5-12450H with 16 GB RAM, Python
 | Decode | 0.341 s | 0.067 s | ~5.1x |
 | **Total** | 1793.63 s | 1.39 s | **~1291x** |
 
-End-to-end latency is reduced by 99.92%. Training dominates both sides; in the
-Rust build it is now roughly 1.5x the cost of encoding, down from about 60x
-before the trainer was optimized.
+End-to-end latency is reduced by 99.92%. At this vocabulary size, training
+dominates both sides; in the Rust build it is now roughly 1.5x the cost of
+encoding, down from about 60x before the trainer was optimized.
 
 The trainer deduplicates pretokenized chunks into unique words weighted by
 frequency, merges words in place, and breaks count ties deterministically
 (highest count, then lowest pair). Encoding finds the lowest-rank adjacent pair
 in a single scan and caches repeated chunks within a call.
 
-These are single-machine, single-subset figures. The benchmark corpus is
-pre-stripped of `<|endoftext|>`, so the special-token path is not exercised, and
-larger corpus and vocabulary runs are still pending.
+### Scaling the corpus
+
+To check whether more training data improves the tokenizer, the Rust
+implementation was trained with an 8192-token vocabulary on the 10 MB and 50 MB
+TinyStories subsets:
+
+| Corpus | Train | Encode | Decode | Tokens | Compression |
+| --- | --- | --- | --- | --- | --- |
+| 10 MB | 3.32 s | 0.56 s | 0.08 s | 2,612,801 | 4.20 bytes/token |
+| 50 MB | 7.97 s | 2.81 s | 0.39 s | 13,078,898 | 4.19 bytes/token |
+
+The learned merges differ between the two models, but 5x more data leaves the
+compression ratio essentially unchanged (4.20 -> 4.19 bytes/token). That
+suggests the extra data produces a very similar tokenization rather than a
+meaningfully better one. TinyStories is a simple corpus, so a planned 200 MB
+training run was intentionally skipped; scaling it further is unlikely to be
+worth the cost.
+
+These are single-machine figures. The benchmark corpora are pre-stripped of
+`<|endoftext|>`, so the special-token path is not exercised.
 
 ## API
 
